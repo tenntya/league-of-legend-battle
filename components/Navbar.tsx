@@ -1,3 +1,4 @@
+"use client";
 export default function Navbar() {
   return (
     <header className="sticky top-0 z-40 backdrop-blur supports-[backdrop-filter]:bg-neutral-900/40 bg-neutral-900/60 border-b border-white/10">
@@ -14,4 +15,3 @@ export default function Navbar() {
     </header>
   );
 }
-"use client";
