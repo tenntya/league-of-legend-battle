@@ -8,10 +8,10 @@ export default function Navbar() {
         </div>
         <nav className="flex items-center gap-3 text-sm">
           <a className="text-neutral-300 hover:text-white transition-soft" href="https://www.riotgames.com/" target="_blank" rel="noreferrer">Riot</a>
-          <a className="text-neutral-300 hover:text-white transition-soft" href="#" onClick={(e)=>e.preventDefault()}>About</a>
+          <button className="text-neutral-300 hover:text-white transition-soft" onClick={(e)=>{e.preventDefault();}}>About</button>
         </nav>
       </div>
     </header>
   );
 }
-
+"use client";
