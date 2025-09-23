@@ -19,9 +19,8 @@ export default function ShareButtons({ getUrl, text }: { getUrl: () => string; t
   }
   return (
     <div className="flex gap-2">
-      <button onClick={copy} className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 border border-white/10 text-xs">リンクをコピー</button>
-      <button onClick={shareX} className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 border border-white/10 text-xs">X で共有</button>
+      <button onClick={copy} className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 border border-white/10 text-label transition-soft">リンクをコピー</button>
+      <button onClick={shareX} className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 border border-white/10 text-label transition-soft">X で共有</button>
     </div>
   );
 }
-

@@ -33,3 +33,4 @@ secrets.github.token
 # Local dev artifacts
 dev.log
 .next-dev.pid
+.vercel

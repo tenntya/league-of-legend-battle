@@ -73,9 +73,11 @@ export async function GET(req: NextRequest) {
         const ids = await listMatchIds(cluster, account.puuid, start, end, queues, parsed.limit);
         send({ type: "ids", total: ids.length });
 
-        const slices: { championName: string; win: boolean; teamPosition: string | null }[] = [];
+        const slices: { championName: string; win: boolean; teamPosition: string | null; patch?: string | null }[] = [];
         const champs = new Map<string, { games: number; wins: number; name: string }>();
         const lanes = new Map<string, { games: number; wins: number }>();
+        const champLaneCount = new Map<string, Map<string, number>>();
+        const champPatchCount = new Map<string, Map<string, number>>();
 
         const concurrency = 8;
         const startedAt = Date.now();
@@ -91,6 +93,15 @@ export async function GET(req: NextRequest) {
             const l = lanes.get(laneKey) ?? { games: 0, wins: 0 };
             l.games += 1; l.wins += r.win ? 1 : 0;
             lanes.set(laneKey, l);
+
+            const lm = champLaneCount.get(r.championName) ?? new Map<string, number>();
+            lm.set(laneKey, (lm.get(laneKey) ?? 0) + 1);
+            champLaneCount.set(r.championName, lm);
+            if (r.patch) {
+              const pm = champPatchCount.get(r.championName) ?? new Map<string, number>();
+              pm.set(r.patch, (pm.get(r.patch) ?? 0) + 1);
+              champPatchCount.set(r.championName, pm);
+            }
           }
 
           const processed = Math.min(i + concurrency, ids.length);
@@ -125,13 +136,23 @@ export async function GET(req: NextRequest) {
 
         // 完了スナップ
         const ver = await getLatestDDragonVersion();
-        const champions = Array.from(champs.values()).map((c) => ({
-          name: c.name,
-          games: c.games,
-          wins: c.wins,
-          winRate: Math.round((c.wins / Math.max(1, c.games)) * 1000) / 10,
-          icon: championIcon(ver, c.name),
-        }));
+        const champions = Array.from(champs.values()).map((c) => {
+          const lm = champLaneCount.get(c.name);
+          let laneBest: string | undefined;
+          if (lm) laneBest = Array.from(lm.entries()).sort((a,b)=>b[1]-a[1])[0]?.[0];
+          const pm = champPatchCount.get(c.name);
+          let primaryPatch: string | undefined;
+          if (pm) primaryPatch = Array.from(pm.entries()).sort((a,b)=>b[1]-a[1])[0]?.[0];
+          return {
+            name: c.name,
+            games: c.games,
+            wins: c.wins,
+            winRate: Math.round((c.wins / Math.max(1, c.games)) * 1000) / 10,
+            lane: laneBest,
+            primaryPatch,
+            icon: championIcon(ver, c.name),
+          };
+        });
         const lanesArr = Array.from(lanes.entries()).map(([lane, v]) => ({
           lane, games: v.games, wins: v.wins,
           winRate: Math.round((v.wins / Math.max(1, v.games)) * 1000) / 10,
@@ -168,4 +189,3 @@ export async function GET(req: NextRequest) {
     },
   });
 }
-

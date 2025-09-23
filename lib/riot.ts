@@ -162,7 +162,7 @@ export async function listMatchIds(
   return out;
 }
 
-export type PlayerSlice = { championName: string; win: boolean; teamPosition: string | null };
+export type PlayerSlice = { championName: string; win: boolean; teamPosition: string | null; patch?: string | null; ts?: number };
 export async function getPlayerSlice(host: Cluster, matchId: string, puuid: string): Promise<PlayerSlice | null> {
   const ck = { matchId, puuid };
   const ch = matchCache.get(ck);
@@ -172,7 +172,28 @@ export async function getPlayerSlice(host: Cluster, matchId: string, puuid: stri
   const data = await res.json();
   const p = data?.info?.participants?.find((x: any) => x.puuid === puuid);
   if (!p) return null;
-  const val = { championName: p.championName, win: Boolean(p.win), teamPosition: p.teamPosition || p.individualPosition || null } as PlayerSlice;
+  const gv: string | undefined = data?.info?.gameVersion;
+  const ts: number | undefined = data?.info?.gameStartTimestamp || data?.info?.gameCreation;
+  const patch = gv ? gv.split(".").slice(0, 2).join(".") : null;
+
+  function normalizeLane(tp?: string | null, ip?: string | null, lane?: string | null, role?: string | null): string | null {
+    const v = (tp || ip || "").toString().toUpperCase();
+    if (v === "TOP" || v === "JUNGLE" || v === "MIDDLE" || v === "BOTTOM" || v === "UTILITY") return v;
+    const ln = (lane || "").toString().toUpperCase();
+    const rl = (role || "").toString().toUpperCase();
+    if (ln === "TOP") return "TOP";
+    if (ln === "JUNGLE") return "JUNGLE";
+    if (ln === "MID" || ln === "MIDDLE") return "MIDDLE";
+    if (ln === "BOTTOM") {
+      if (rl.includes("SUPPORT")) return "UTILITY";
+      if (rl.includes("CARRY") || rl.includes("DUO_CARRY")) return "BOTTOM";
+      return "BOTTOM";
+    }
+    return null;
+  }
+
+  const laneNorm = normalizeLane(p.teamPosition, p.individualPosition, (p as any).lane, (p as any).role);
+  const val = { championName: p.championName, win: Boolean(p.win), teamPosition: laneNorm || null, patch, ts } as PlayerSlice;
   matchCache.set(ck, val, 1000 * 60 * 30); // 30min
   return val;
 }

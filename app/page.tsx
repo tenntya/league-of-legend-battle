@@ -1,16 +1,20 @@
 "use client";
 import { useMemo, useRef, useState } from "react";
 import Card from "@/components/Card";
-import { Bar, Doughnut } from "react-chartjs-2";
+import MetaKPI from "@/components/MetaKPI";
+import { Bar, Doughnut, Chart as ChartComponent } from "react-chartjs-2";
 import { CardSkeleton, ChartSkeleton, ListSkeleton } from "@/components/Skeleton";
 import ShareButtons from "@/components/ShareButtons";
-import { Chart as ChartJS, ArcElement, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from "chart.js";
-ChartJS.register(ArcElement, BarElement, CategoryScale, LinearScale, Tooltip, Legend);
+import ChartJS from "chart.js/auto";
 // ダーク背景でも視認できるようにデフォルトカラーを調整
 ChartJS.defaults.color = "#e5e7eb"; // tailwind neutral-200
 ChartJS.defaults.borderColor = "rgba(255,255,255,0.08)";
+// ツールチップのフォント/色を軽く統一
+ChartJS.defaults.plugins.tooltip.backgroundColor = "rgba(17,17,17,0.9)";
+ChartJS.defaults.plugins.tooltip.borderColor = "rgba(255,255,255,0.08)";
+ChartJS.defaults.plugins.tooltip.borderWidth = 1;
 
-type Champ = { name: string; games: number; wins: number; winRate: number; icon: string };
+type Champ = { name: string; games: number; wins: number; winRate: number; icon: string; lane?: string; primaryPatch?: string };
 type Lane = { lane: string; games: number; wins: number; winRate: number };
 type Cluster = "americas" | "asia" | "europe";
 type Api = {
@@ -20,6 +24,8 @@ type Api = {
   topUsed: Champ[];
   topWinRate: Champ[];
   bestLane: string;
+  byPatch?: { patch: string; totalGames: number; topUsed: Omit<Champ, 'icon'>[]; topWinRate: Omit<Champ, 'icon'>[]; lanes: Lane[]; bestLane: string }[];
+  bySplit?: { key: string; label: string; totalGames: number; topUsed: Omit<Champ, 'icon'>[]; topWinRate: Omit<Champ, 'icon'>[]; lanes: Lane[]; bestLane: string }[];
   insights?: { summary: string; bullets: string[] };
 };
 
@@ -27,10 +33,15 @@ export default function Page() {
   const now = new Date();
   const [riotId, setRiotId] = useState("");
   const [year, setYear] = useState(now.getFullYear());
+  const [mode, setMode] = useState<"year" | "patch" | "patches" | "splits" | "custom">("year");
+  const [patchStr, setPatchStr] = useState<string>("");
+  const [patchCount, setPatchCount] = useState<number>(12);
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
   const [queues, setQueues] = useState<string>("420,440");
   const [cluster, setCluster] = useState<Cluster>("asia"); // 既定を JP/KR の Asia に
-  const [preset, setPreset] = useState<"ranked" | "normal" | "aram" | "all" | "custom">("ranked");
-  const [limit, setLimit] = useState<number>(300);
+  const [preset, setPreset] = useState<"ranked" | "normal" | "aram" | "all">("ranked");
+  const [limit, setLimit] = useState<number>(100);
   const [data, setData] = useState<Api | null>(null);
   const [partial, setPartial] = useState<Partial<Api> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -62,6 +73,13 @@ export default function Page() {
       u.searchParams.set("queues", queues);
       u.searchParams.set("cluster", cluster);
       u.searchParams.set("limit", String(limit));
+      u.searchParams.set("mode", mode);
+      if (mode === "patch" && patchStr) u.searchParams.set("patch", patchStr);
+      if (mode === "patches") u.searchParams.set("patchCount", String(patchCount));
+      if (mode === "custom") {
+        if (fromDate) u.searchParams.set("from", fromDate);
+        if (toDate) u.searchParams.set("to", toDate);
+      }
       if (streaming) {
         if (esRef.current) { esRef.current.close(); esRef.current = null; }
         const es = new EventSource(u.toString());
@@ -106,40 +124,55 @@ export default function Page() {
 
   return (
     <main className="max-w-6xl mx-auto p-6 space-y-6">
-      <header className="space-y-3">
-        <h1 className="text-3xl font-semibold tracking-tight bg-gradient-to-r from-white to-neutral-400 bg-clip-text text-transparent">LoL 年間サマリー（NoDB / Vercel）</h1>
-        <p className="text-neutral-400 text-sm">Riot ID から今年の「使用数・勝率・得意レーン」を即席集計</p>
+      <header className="space-y-3" aria-label="アプリの概要">
+        <h1 className="text-h1 font-semibold tracking-tight bg-gradient-to-r from-white to-brand-primary bg-clip-text text-transparent">1年のLoL、いま秒で見える</h1>
+        <p className="text-neutral-400 text-small">Riot ID から「使用数・勝率・得意レーン」をさくっと集計</p>
       </header>
 
       <Card title="検索">
-        <div className="flex flex-col md:flex-row gap-3 items-start md:items-end">
-          <div className="flex-1">
-            <label className="text-xs text-neutral-400">Riot ID（例: Taro#JP1）</label>
+        <div className="flex flex-col md:flex-row md:flex-wrap gap-3 items-start md:items-end">
+          <div className="w-full md:flex-[2] md:min-w-[420px] lg:min-w-[560px]">
+            <label className="text-label text-neutral-400" htmlFor="riotId">Riot ID（例: Taro#JP1）</label>
             <input
+              id="riotId"
               value={riotId}
               onChange={(e) => setRiotId(e.target.value)}
-              placeholder="GameName#TagLine"
-              className="w-full rounded-xl bg-neutral-950 border border-neutral-800 p-2 outline-none"
+              placeholder="GameName#TagLine（大文字・#・数字を確認）"
+              className="w-full rounded-xl bg-neutral-950 border border-neutral-800 p-2 outline-none transition-soft focus:border-blue-400/50"
+              aria-label="Riot ID 入力"
             />
           </div>
-          <div>
-            <label className="text-xs text-neutral-400">地域</label>
+          <div className="w-full md:w-44">
+            <label className="text-label text-neutral-400" htmlFor="cluster">地域</label>
             <select
+              id="cluster"
               value={cluster}
               onChange={(e) => setCluster(e.target.value as Cluster)}
-              className="rounded-xl bg-neutral-950 border border-neutral-800 p-2"
+              className="w-full rounded-xl bg-neutral-950 border border-neutral-800 p-2 transition-soft focus:border-blue-400/50"
             >
               <option value="asia">JP / KR（Asia）</option>
               <option value="americas">NA / BR / LAN / LAS / OCE（Americas）</option>
               <option value="europe">EUW / EUNE / TR / RU（Europe）</option>
             </select>
           </div>
-          <div>
-            <label className="text-xs text-neutral-400">年</label>
+          <div className="w-full md:w-40">
+            <label className="text-label text-neutral-400" htmlFor="mode">対象期間</label>
+            <select id="mode" value={mode} onChange={(e)=>setMode(e.target.value as any)} className="w-full rounded-xl bg-neutral-950 border border-neutral-800 p-2 transition-soft focus:border-blue-400/50">
+              <option value="year">年</option>
+              <option value="patch">パッチ</option>
+              <option value="patches">パッチ一覧</option>
+              <option value="splits">スプリット（β）</option>
+              <option value="custom">期間指定</option>
+            </select>
+          </div>
+          {mode === "year" && (
+          <div className="w-full md:w-28">
+            <label className="text-label text-neutral-400" htmlFor="year">年</label>
             <select
+              id="year"
               value={year}
               onChange={(e) => setYear(Number(e.target.value))}
-              className="rounded-xl bg-neutral-950 border border-neutral-800 p-2"
+              className="w-full rounded-xl bg-neutral-950 border border-neutral-800 p-2 transition-soft focus:border-blue-400/50"
             >
               {years.map((y) => (
                 <option key={y} value={y}>
@@ -148,12 +181,14 @@ export default function Page() {
               ))}
             </select>
           </div>
-          <div>
-            <label className="text-xs text-neutral-400">対象試合数（上限）</label>
+          )}
+          <div className="w-full md:w-36">
+            <label className="text-label text-neutral-400" htmlFor="limit">対象試合数（上限）</label>
             <select
+              id="limit"
               value={limit}
               onChange={(e) => setLimit(Number(e.target.value))}
-              className="rounded-xl bg-neutral-950 border border-neutral-800 p-2"
+              className="w-full rounded-xl bg-neutral-950 border border-neutral-800 p-2 transition-soft focus:border-blue-400/50"
             >
               <option value={100}>直近 100</option>
               <option value={300}>直近 300</option>
@@ -161,8 +196,34 @@ export default function Page() {
               <option value={1000}>直近 1000</option>
             </select>
           </div>
-          <div>
-            <label className="text-xs text-neutral-400">キュー（プリセット/手動）</label>
+          {mode === "patch" && (
+            <div className="w-full md:w-28">
+              <label className="text-label text-neutral-400" htmlFor="patch">パッチ</label>
+              <input id="patch" value={patchStr} onChange={(e)=>setPatchStr(e.target.value)} placeholder="例: 14.18" className="w-full rounded-xl bg-neutral-950 border border-neutral-800 p-2 transition-soft focus:border-blue-400/50" />
+            </div>
+          )}
+          {mode === "custom" && (
+            <div className="flex w-full md:w-auto items-end gap-3">
+              <div>
+                <label className="text-label text-neutral-400" htmlFor="from">開始日</label>
+                <input id="from" type="date" value={fromDate} onChange={(e)=>setFromDate(e.target.value)} className="rounded-xl bg-neutral-950 border border-neutral-800 p-2 transition-soft focus:border-blue-400/50" />
+              </div>
+              <div>
+                <label className="text-label text-neutral-400" htmlFor="to">終了日</label>
+                <input id="to" type="date" value={toDate} onChange={(e)=>setToDate(e.target.value)} className="rounded-xl bg-neutral-950 border border-neutral-800 p-2 transition-soft focus:border-blue-400/50" />
+              </div>
+            </div>
+          )}
+          {mode === "patches" && (
+            <div className="w-full md:w-36">
+              <label className="text-label text-neutral-400" htmlFor="patchCount">パッチ数</label>
+              <select id="patchCount" value={patchCount} onChange={(e)=>setPatchCount(Number(e.target.value))} className="w-full rounded-xl bg-neutral-950 border border-neutral-800 p-2 transition-soft focus:border-blue-400/50">
+                {[10,12,16,20].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="w-full md:w-auto">
+            <label className="text-label text-neutral-400">キュー（プリセット）</label>
             <div className="flex gap-2 mb-2">
               {([
                 { k: "ranked", label: "ランク" },
@@ -173,51 +234,37 @@ export default function Page() {
                 <button
                   key={k}
                   onClick={() => applyPreset(k)}
-                  className={`px-3 py-1 rounded-lg border ${
-                    preset === k ? "bg-white/10 border-neutral-600" : "bg-neutral-950 border-neutral-800 hover:bg-white/5"
-                  } text-sm`}
+                  className={`px-3 py-1 rounded-lg border transition-soft text-small ${
+                    preset === k
+                      ? "bg-white/10 border-blue-400/40 ring-2 ring-blue-500/30"
+                      : "bg-neutral-950 border-neutral-800 hover:bg-white/5"
+                  }`}
                 >
                   {label}
                 </button>
               ))}
             </div>
-            <input
-              value={queues}
-              onChange={(e) => {
-                setQueues(e.target.value);
-                setPreset("custom");
-              }}
-              className="w-48 rounded-xl bg-neutral-950 border border-neutral-800 p-2"
-            />
-            <p className="text-[11px] text-neutral-500 mt-1">例: ランク=420,440 / ノーマル=400,430,490 / ARAM=450</p>
           </div>
           <button
             onClick={run}
             disabled={loading || !riotId.includes("#")}
-            className="rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-50 px-4 py-2"
-          >
+            className="w-full md:w-auto rounded-xl disabled:opacity-50 px-4 py-2 transition-soft bg-gradient-to-r from-brand-primary/30 to-brand-secondary/30 hover:from-brand-primary/40 hover:to-brand-secondary/40 border border-white/10 shrink-0 md:self-end"
+            aria-disabled={loading || !riotId.includes('#')}
+            >
             {loading ? "検索中…" : "検索"}
           </button>
-          <div className="flex items-center gap-2 ml-auto text-xs text-neutral-400">
+          <div className="flex items-center gap-2 w-full md:w-auto md:ml-auto text-xs text-neutral-400 md:self-end">
             <input id="streaming" type="checkbox" checked={streaming} onChange={(e)=>setStreaming(e.target.checked)} />
             <label htmlFor="streaming">高速表示（ストリーミング）</label>
           </div>
         </div>
-        {error && <p className="text-red-400 text-sm mt-2">エラー: {String(error)}</p>}
+        {error && <p className="text-red-400 text-sm mt-2" aria-live="polite">エラー: {String(error)}</p>}
         {progress && (
           <div className="mt-3">
-            <div className="h-2 w-full rounded bg-white/10 overflow-hidden">
+            <div className="h-2 w-full rounded bg-white/10 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.done} aria-label="取得進捗">
               <div className="h-full bg-blue-500 transition-all" style={{ width: `${Math.round((progress.done/Math.max(1,progress.total))*100)}%` }} />
             </div>
-            <div className="text-xs text-neutral-400 mt-1">{progress.done} / {progress.total}</div>
-          </div>
-        )}
-        {progress && (
-          <div className="mt-3">
-            <div className="h-2 w-full rounded bg-white/10 overflow-hidden">
-              <div className="h-full bg-blue-500 transition-all" style={{ width: `${Math.round((progress.done/Math.max(1,progress.total))*100)}%` }} />
-            </div>
-            <div className="text-xs text-neutral-400 mt-1">{progress.done} / {progress.total}</div>
+            <div className="text-xs text-neutral-400 mt-1" aria-live="polite">{progress.done} / {progress.total}</div>
           </div>
         )}
       </Card>
@@ -254,10 +301,46 @@ export default function Page() {
 
       {data && (
         <>
+          {data.byPatch && data.byPatch.length > 0 && (
+            <Card title="パッチ別サマリー（直近）">
+              <div className="flex gap-3 overflow-x-auto pb-1">
+                {data.byPatch.map((p) => (
+                  <button onClick={() => { setMode('patch'); setPatchStr(p.patch); run(); }} key={p.patch} className="text-left min-w-[200px] rounded-xl ring-1 ring-white/10 bg-neutral-950/60 p-3 hover:bg-white/5 transition-colors">
+                    <div className="text-label text-neutral-400 mb-1">Patch {p.patch}</div>
+                    <div className="text-small text-neutral-300">{p.totalGames.toLocaleString()} 試合</div>
+                    <div className="text-small text-neutral-400">Best: {p.bestLane}</div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {p.topUsed.slice(0,3).map((c) => (
+                        <span key={c.name} className="text-[11px] px-2 py-0.5 rounded bg-white/5 border border-white/10">{c.name}</span>
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </Card>
+          )}
+          {data.bySplit && data.bySplit.length > 0 && (
+            <Card title="スプリット別サマリー（暫定）">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {data.bySplit.map((s) => (
+                  <div key={s.key} className="rounded-xl ring-1 ring-white/10 bg-neutral-950/60 p-3">
+                    <div className="text-label text-neutral-400 mb-1">{s.label}</div>
+                    <div className="text-small text-neutral-300">{s.totalGames.toLocaleString()} 試合</div>
+                    <div className="text-small text-neutral-400">Best: {s.bestLane}</div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {s.topUsed.slice(0,3).map((c) => (
+                        <span key={c.name} className="text-[11px] px-2 py-0.5 rounded bg-white/5 border border-white/10">{c.name}</span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
           {data.insights && (
             <Card title="AI分析（ルールベース・ベータ）">
               <p className="text-sm mb-2 text-neutral-200">{data.insights.summary}</p>
-              {data.insights.bullets.length > 0 && (
+              {Array.isArray(data.insights.bullets) && data.insights.bullets.length > 0 && (
                 <ul className="list-disc list-inside text-sm text-neutral-300 space-y-1">
                   {data.insights.bullets.map((b, i) => (
                     <li key={i}>{b}</li>
@@ -266,70 +349,67 @@ export default function Page() {
               )}
             </Card>
           )}
-          <section className="grid md:grid-cols-4 gap-4">
-            <Card title="Riot ID">
-              <div className="text-lg">{data.meta.riotId}</div>
-            </Card>
-            <Card title="総試合数">
-              <div className="text-2xl">{data.meta.totalGames}</div>
-            </Card>
-            <Card title="得意レーン">
-              <div className="text-lg">{data.bestLane}</div>
-            </Card>
-            <Card title="生成日時">
-              <div className="text-sm">{new Date(data.meta.generatedAt).toLocaleString()}</div>
-            </Card>
-            <Card title="リージョン">
-              <div className="text-sm uppercase">{data.meta.cluster}</div>
-            </Card>
-          </section>
+          <MetaKPI meta={data.meta as any} bestLane={data.bestLane} />
 
           <section className="grid md:grid-cols-2 gap-4">
-            <Card title="使用数 TOP10">
-              <Bar
-                data={{
-                  labels: data.topUsed.map((c) => c.name),
-                  datasets: [{
-                    label: "試合数",
-                    data: data.topUsed.map((c) => c.games),
-                    backgroundColor: "rgba(96, 165, 250, 0.7)", // blue-400
-                    hoverBackgroundColor: "rgba(96, 165, 250, 0.9)",
-                  }],
-                }}
-                options={{
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  plugins: { legend: { display: true, labels: { color: "#e5e7eb" } } },
-                  scales: {
-                    x: { ticks: { color: "#e5e7eb" }, grid: { color: "rgba(255,255,255,0.08)" } },
-                    y: { ticks: { color: "#e5e7eb" }, grid: { color: "rgba(255,255,255,0.08)" } },
-                  },
-                }}
-              />
-            </Card>
-            <Card title="勝率 TOP10（5試合以上）">
-              <Bar
-                data={{
-                  labels: data.topWinRate.map((c) => c.name),
-                  datasets: [{
-                    label: "勝率(%)",
-                    data: data.topWinRate.map((c) => c.winRate),
-                    backgroundColor: "rgba(52, 211, 153, 0.7)", // emerald-400
-                    hoverBackgroundColor: "rgba(52, 211, 153, 0.9)",
-                  }],
-                }}
-                options={{
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  plugins: { legend: { display: true, labels: { color: "#e5e7eb" } } },
-                  scales: {
-                    x: { ticks: { color: "#e5e7eb" }, grid: { color: "rgba(255,255,255,0.08)" } },
-                    y: { ticks: { color: "#e5e7eb" }, grid: { color: "rgba(255,255,255,0.08)" } },
-                  },
-                }}
-              />
+            <Card title="使用数/勝率（TOP10 合成）">
+              <div className="h-[360px]">
+              {(() => {
+                const labels = data.topUsed.map((c) => c.name);
+                const games = data.topUsed.map((c) => c.games);
+                const wrMap = new Map(data.champions.map((c) => [c.name, c.winRate]));
+                const winRates = labels.map((n) => wrMap.get(n) || 0);
+                return (
+                  <ChartComponent
+                    type='bar'
+                    data={{
+                      labels,
+                      datasets: [
+                        {
+                          type: 'bar',
+                          label: '試合数',
+                          data: games,
+                          backgroundColor: 'rgba(96, 165, 250, 0.7)',
+                          hoverBackgroundColor: 'rgba(96, 165, 250, 0.9)',
+                          yAxisID: 'y',
+                        },
+                        {
+                          type: 'line',
+                          label: '勝率(%)',
+                          data: winRates,
+                          borderColor: '#34d399',
+                          backgroundColor: 'rgba(52, 211, 153, 0.2)',
+                          tension: 0.3,
+                          yAxisID: 'y1',
+                        },
+                      ],
+                    }}
+                    options={{
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      plugins: {
+                        legend: { display: true, labels: { color: '#e5e7eb' } },
+                        tooltip: {
+                          callbacks: {
+                            label: (ctx) => ctx.datasetIndex === 0
+                              ? `試合数: ${Number(ctx.parsed.y).toLocaleString()}`
+                              : `勝率: ${Number(ctx.parsed.y).toFixed(1)}%`,
+                          },
+                        },
+                      },
+                      scales: {
+                        x: { ticks: { color: '#e5e7eb' }, grid: { color: 'rgba(255,255,255,0.08)' } },
+                        y: { ticks: { color: '#e5e7eb' }, grid: { color: 'rgba(255,255,255,0.08)' } },
+                        y1: { position: 'right' as const, min: 0, max: 100, ticks: { color: '#e5e7eb', callback: (v) => `${v}%` }, grid: { drawOnChartArea: false } },
+                      },
+                    }}
+                  />
+                );
+              })()}
+              </div>
             </Card>
             <Card title="レーン分布">
+              <div className="h-[320px]">
               <Doughnut
                 data={{
                   labels: data.lanes.map((l) => l.lane),
@@ -337,11 +417,11 @@ export default function Page() {
                     label: "試合数",
                     data: data.lanes.map((l) => l.games),
                     backgroundColor: [
-                      "#60a5fa", // blue-400
-                      "#34d399", // emerald-400
+                      "#60a5fa", // brand.primary
+                      "#34d399", // brand.secondary
                       "#fbbf24", // amber-400
-                      "#f472b6", // pink-400
-                      "#a78bfa", // violet-400
+                      "#f472b6", // brand.pink
+                      "#a78bfa", // brand.violet
                       "#f87171", // red-400
                     ],
                   }],
@@ -349,27 +429,76 @@ export default function Page() {
                 options={{
                   responsive: true,
                   maintainAspectRatio: false,
-                  plugins: { legend: { labels: { color: "#e5e7eb" } } },
+                  plugins: {
+                    legend: { labels: { color: "#e5e7eb" } },
+                    tooltip: {
+                      callbacks: {
+                        label: (ctx) => `${ctx.label}: ${Number(ctx.parsed).toLocaleString()} 試合`,
+                      },
+                    },
+                  },
                 }}
               />
-            </Card>
-            <Card title="チャンピオン一覧">
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {data.champions
-                  .sort((a, b) => b.games - a.games)
-                  .map((ch) => (
-                    <div key={ch.name} className="flex items-center gap-3">
-                      <img src={ch.icon} alt={ch.name} width={36} height={36} className="rounded-lg" />
-                      <div className="text-sm">
-                        <div className="font-medium">{ch.name}</div>
-                        <div className="text-neutral-400">
-                          {ch.games}G / {ch.winRate}%
-                        </div>
-                      </div>
-                    </div>
-                  ))}
               </div>
             </Card>
+            <div className="md:col-span-2">
+              <Card title="チャンピオン一覧（レーン別）">
+                {(() => {
+                  const cols: { code: string; label: string }[] = [
+                    { code: 'TOP', label: 'TOP' },
+                    { code: 'JUNGLE', label: 'JNG' },
+                    { code: 'MIDDLE', label: 'MID' },
+                    { code: 'BOTTOM', label: 'BOT' },
+                    { code: 'UTILITY', label: 'SUP' },
+                  ];
+                  const colItems = cols.map(c => ({ ...c, items: data.champions.filter(x => (x.lane || 'UNKNOWN') === c.code).sort((a,b)=>b.games-a.games) }));
+                  const unknown = data.champions.filter(x => (x.lane || 'UNKNOWN') === 'UNKNOWN').sort((a,b)=>b.games-a.games);
+                  return (
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                      {colItems.map(({ code, label, items }) => (
+                        <div key={code}>
+                          <div className="text-label text-neutral-400 mb-2">{label}</div>
+                          <div className="space-y-2">
+                            {items.map((ch) => (
+                              <div key={ch.name} className="group flex items-center gap-3 py-1.5 px-2 -mx-2 rounded-lg hover:bg-white/5 transition-colors">
+                                <img src={ch.icon} alt={ch.name} width={36} height={36} className="rounded-xl ring-1 ring-white/10" />
+                                <div className="text-sm">
+                                  <div className="font-medium flex items-center gap-2">
+                                    <span>{ch.name}</span>
+                                    {ch.primaryPatch && <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-white/10">P{ch.primaryPatch}</span>}
+                                  </div>
+                                  <div className="text-neutral-500 text-small">{ch.games}G / {ch.winRate}%</div>
+                                </div>
+                              </div>
+                            ))}
+                            {items.length === 0 && <div className="text-small text-neutral-600">-</div>}
+                          </div>
+                        </div>
+                      ))}
+                      {unknown.length > 0 && (
+                        <div className="lg:col-span-5">
+                          <div className="text-label text-neutral-400 mb-2">UNKNOWN</div>
+                          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+                            {unknown.map((ch) => (
+                              <div key={ch.name} className="group flex items-center gap-3 py-1.5 px-2 -mx-2 rounded-lg hover:bg-white/5 transition-colors">
+                                <img src={ch.icon} alt={ch.name} width={36} height={36} className="rounded-xl ring-1 ring-white/10" />
+                                <div className="text-sm">
+                                  <div className="font-medium flex items-center gap-2">
+                                    <span>{ch.name}</span>
+                                    {ch.primaryPatch && <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-white/10">P{ch.primaryPatch}</span>}
+                                  </div>
+                                  <div className="text-neutral-500 text-small">{ch.games}G / {ch.winRate}%</div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </Card>
+            </div>
           </section>
 
           <div className="flex items-center justify-between mt-2">
@@ -397,15 +526,7 @@ export default function Page() {
           </Card>
         </>
       )}
-      {!data && (
-        <Card title="ヒント">
-          <ul className="list-disc list-inside text-sm text-neutral-300 space-y-1">
-            <li>Riot ID は <span className="text-neutral-100">GameName#TagLine</span> 形式（例: <span className="text-neutral-100">Taro#JP1</span>）。</li>
-            <li>ノーマルを見るときはプリセット「ノーマル」または <span className="text-neutral-100">400,430,490</span>。</li>
-            <li>レート制限で遅延する場合があります（429 時に自動バックオフ）。</li>
-          </ul>
-        </Card>
-      )}
+      {/* ヒントセクションは非表示に変更 */}
     </main>
   );
 }
