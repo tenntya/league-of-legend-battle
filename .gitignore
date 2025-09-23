@@ -29,3 +29,7 @@ Thumbs.db
 # Local deployment notes and secrets (do not commit)
 DEPLOY_NOTES.txt
 secrets.github.token
+
+# Local dev artifacts
+dev.log
+.next-dev.pid
