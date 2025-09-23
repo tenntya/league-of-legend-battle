@@ -1,0 +1,566 @@
+# codex.yaml
+spec: "1.0"
+name: "lol-one-shot-no-db"
+description: >
+  Riot ID から今年1年のチャンピオン使用数・勝率・得意レーンを可視化。
+  サーバ側で Riot API を都度叩いて集計（DBなし）。Vercel デプロイ対応。
+variables:
+  NODE_VERSION: "20"
+  NEXT_VERSION: "^14.2.4"
+  REACT_VERSION: "^18.3.1"
+  TYPESCRIPT_VERSION: "^5.6.2"
+  CHARTJS_VERSION: "^4.4.1"
+  RCHART_VERSION: "^5.2.0"
+  ZOD_VERSION: "^3.23.8"
+  TAILWIND_VERSION: "^3.4.10"
+  ESLINT_VERSION: "^8.57.0"
+
+steps:
+  - run: |
+      mkdir -p app/api/stats lib components public && \
+      npm init -y
+
+  - write_file:
+      path: package.json
+      content: |
+        {
+          "name": "lol-one-shot-no-db",
+          "private": true,
+          "type": "module",
+          "scripts": {
+            "dev": "next dev",
+            "build": "next build",
+            "start": "next start",
+            "lint": "next lint"
+          },
+          "dependencies": {
+            "next": "${NEXT_VERSION}",
+            "react": "${REACT_VERSION}",
+            "react-dom": "${REACT_VERSION}",
+            "zod": "${ZOD_VERSION}",
+            "chart.js": "${CHARTJS_VERSION}",
+            "react-chartjs-2": "${RCHART_VERSION}"
+          },
+          "devDependencies": {
+            "typescript": "${TYPESCRIPT_VERSION}",
+            "@types/node": "^20.14.10",
+            "@types/react": "^18.3.3",
+            "eslint": "${ESLINT_VERSION}",
+            "eslint-config-next": "${NEXT_VERSION}",
+            "tailwindcss": "${TAILWIND_VERSION}",
+            "postcss": "^8.4.47",
+            "autoprefixer": "^10.4.20"
+          },
+          "engines": { "node": ">=${NODE_VERSION}" }
+        }
+
+  - write_file:
+      path: next.config.ts
+      content: |
+        import type { NextConfig } from "next";
+        const nextConfig: NextConfig = {
+          reactStrictMode: true,
+          experimental: { typedRoutes: true },
+        };
+        export default nextConfig;
+
+  - write_file:
+      path: tsconfig.json
+      content: |
+        {
+          "compilerOptions": {
+            "target": "ES2022",
+            "lib": ["dom", "dom.iterable", "es2022"],
+            "allowJs": false,
+            "skipLibCheck": true,
+            "strict": true,
+            "noEmit": true,
+            "esModuleInterop": true,
+            "module": "esnext",
+            "moduleResolution": "bundler",
+            "resolveJsonModule": true,
+            "isolatedModules": true,
+            "jsx": "preserve",
+            "baseUrl": ".",
+            "paths": {
+              "@/*": ["./*"]
+            }
+          },
+          "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+          "exclude": ["node_modules"]
+        }
+
+  - write_file:
+      path: next-env.d.ts
+      content: |
+        /// <reference types="next" />
+        /// <reference types="next/image-types/global" />
+        /// <reference types="next/navigation-types/compat/navigation" />
+
+  - write_file:
+      path: .env.sample
+      content: |
+        RIOT_API_KEY=
+        DEFAULT_QUEUES=420,440
+        RIOT_LANG=ja_JP
+
+  - write_file:
+      path: vercel.json
+      content: |
+        {
+          "version": 2,
+          "framework": "nextjs",
+          "buildCommand": "npm run build",
+          "devCommand": "npm run dev",
+          "env": {
+            "RIOT_API_KEY": "@riot_api_key",
+            "DEFAULT_QUEUES": "@default_queues",
+            "RIOT_LANG": "@riot_lang"
+          }
+        }
+
+  - write_file:
+      path: postcss.config.js
+      content: |
+        export default {
+          plugins: {
+            tailwindcss: {},
+            autoprefixer: {},
+          },
+        }
+
+  - write_file:
+      path: tailwind.config.ts
+      content: |
+        import type { Config } from "tailwindcss";
+        export default {
+          content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}"],
+          theme: { extend: {} },
+          plugins: [],
+        } satisfies Config;
+
+  - write_file:
+      path: app/globals.css
+      content: |
+        @tailwind base;
+        @tailwind components;
+        @tailwind utilities;
+        :root { color-scheme: dark; }
+        body { @apply bg-neutral-950 text-neutral-100; }
+
+  - write_file:
+      path: app/layout.tsx
+      content: |
+        export const metadata = {
+          title: "LoL 年間サマリー（NoDB）",
+          description: "Riot ID から今年の使用数・勝率・得意レーンを可視化",
+        };
+        export default function RootLayout({ children }: { children: React.ReactNode }) {
+          return (
+            <html lang="ja">
+              <body className="min-h-dvh antialiased">{children}</body>
+            </html>
+          );
+        }
+
+  - write_file:
+      path: components/Card.tsx
+      content: |
+        export default function Card({ title, children }: { title: string; children: React.ReactNode }) {
+          return (
+            <section className="rounded-2xl bg-neutral-900/60 border border-neutral-800 p-4">
+              <h2 className="text-sm text-neutral-400 mb-2">{title}</h2>
+              <div>{children}</div>
+            </section>
+          );
+        }
+
+  - write_file:
+      path: lib/riot.ts
+      content: |
+        const ACCOUNT_HOSTS = ["americas", "asia", "europe"] as const;
+        const MATCH_HOSTS = ["americas", "asia", "europe"] as const;
+
+        export type Cluster = typeof MATCH_HOSTS[number];
+
+        type RiotAccount = { puuid: string; gameName: string; tagLine: string };
+        type RiotMatchId = string;
+
+        export async function sleep(ms: number) {
+          return new Promise((r) => setTimeout(r, ms));
+        }
+
+        async function fetchRiot(url: string, init?: RequestInit, attempt = 0): Promise<Response> {
+          const res = await fetch(url, {
+            ...init,
+            headers: {
+              "X-Riot-Token": process.env.RIOT_API_KEY!,
+              ...(init?.headers || {}),
+            },
+            cache: "no-store",
+          });
+          if (res.status === 429) {
+            const retryAfter = Number(res.headers.get("Retry-After") || "1");
+            if (attempt < 5) { await sleep(retryAfter * 1000); return fetchRiot(url, init, attempt + 1); }
+          }
+          return res;
+        }
+
+        export async function getAccountByRiotId(riotId: string): Promise<RiotAccount> {
+          const [name, tag] = riotId.split("#");
+          if (!name || !tag) throw new Error("invalid_riot_id");
+          let lastErr: any;
+          for (const host of ACCOUNT_HOSTS) {
+            try {
+              const res = await fetchRiot(`https://${host}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`);
+              if (res.ok) return (await res.json()) as RiotAccount;
+              if (res.status === 404) throw new Error("not_found");
+            } catch (e) { lastErr = e; }
+          }
+          throw lastErr || new Error("account_lookup_failed");
+        }
+
+        export async function detectClusterByPuuid(puuid: string): Promise<Cluster> {
+          for (const host of MATCH_HOSTS) {
+            const url = `https://${host}.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=1`;
+            const res = await fetchRiot(url);
+            if (res.ok) return host;
+          }
+          throw new Error("cluster_detect_failed");
+        }
+
+        export async function listMatchIds(host: Cluster, puuid: string, startTime: number, endTime: number, queues: number[]): Promise<RiotMatchId[]> {
+          const ids: RiotMatchId[] = [];
+          let start = 0;
+          const qs = (s: number) => `start=${s}&count=100&startTime=${startTime}&endTime=${endTime}` + (queues.length ? `&queue=${queues.join("&queue=")}` : "");
+          while (true) {
+            const res = await fetchRiot(`https://${host}.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?${qs(start)}`);
+            if (!res.ok) break;
+            const batch = (await res.json()) as string[];
+            ids.push(...batch);
+            if (batch.length < 100) break;
+            start += 100;
+            if (ids.length > 3000) break; // 安全弁
+          }
+          return ids;
+        }
+
+        export type PlayerSlice = { championName: string; win: boolean; teamPosition: string | null };
+        export async function getPlayerSlice(host: Cluster, matchId: string, puuid: string): Promise<PlayerSlice | null> {
+          const res = await fetchRiot(`https://${host}.api.riotgames.com/lol/match/v5/matches/${matchId}`);
+          if (!res.ok) return null;
+          const data = await res.json();
+          const p = data?.info?.participants?.find((x: any) => x.puuid === puuid);
+          if (!p) return null;
+          return { championName: p.championName, win: Boolean(p.win), teamPosition: p.teamPosition || p.individualPosition || null };
+        }
+
+        export async function getLatestDDragonVersion(): Promise<string> {
+          const res = await fetch("https://ddragon.leagueoflegends.com/api/versions.json", { cache: "no-store" });
+          const arr = (await res.json()) as string[];
+          return arr[0];
+        }
+
+        export function championIcon(ver: string, championName: string) {
+          return `https://ddragon.leagueoflegends.com/cdn/${ver}/img/champion/${encodeURIComponent(championName)}.png`;
+        }
+
+  - write_file:
+      path: app/api/stats/route.ts
+      content: |
+        import { NextRequest } from "next/server";
+        import { z } from "zod";
+        import {
+          getAccountByRiotId,
+          detectClusterByPuuid,
+          listMatchIds,
+          getPlayerSlice,
+          getLatestDDragonVersion,
+          championIcon,
+          type Cluster
+        } from "@/lib/riot";
+
+        export const runtime = "nodejs";
+
+        const Query = z.object({
+          riotId: z.string().min(3),
+          year: z.coerce.number().int().min(2010).max(2100).default(new Date().getFullYear()),
+          queues: z.string().optional()
+        });
+
+        function yearRangeJST(year: number) {
+          const tzOffset = 9 * 60; // JST
+          const start = Date.UTC(year, 0, 1, 0, 0) / 1000 - tzOffset * 60;
+          const end = Date.UTC(year, 11, 31, 23, 59, 59) / 1000 - tzOffset * 60;
+          return { start, end };
+        }
+
+        export async function GET(req: NextRequest) {
+          try {
+            if (!process.env.RIOT_API_KEY) {
+              return new Response(JSON.stringify({ error: "server_misconfigured", message: "RIOT_API_KEY missing" }), { status: 500 });
+            }
+            const { searchParams } = new URL(req.url);
+            const parsed = Query.parse({
+              riotId: searchParams.get("riotId"),
+              year: searchParams.get("year"),
+              queues: searchParams.get("queues"),
+            });
+
+            const queues = (parsed.queues ?? process.env.DEFAULT_QUEUES ?? "")
+              .split(",")
+              .map((x) => Number(x.trim()))
+              .filter((x) => Number.isFinite(x));
+
+            const { start, end } = yearRangeJST(parsed.year);
+
+            const account = await getAccountByRiotId(parsed.riotId);
+            const cluster: Cluster = await detectClusterByPuuid(account.puuid);
+
+            const ids = await listMatchIds(cluster, account.puuid, start, end, queues);
+
+            const slices = [];
+            // ほどほどの並列
+            const concurrency = 4;
+            for (let i = 0; i < ids.length; i += concurrency) {
+              const chunk = ids.slice(i, i + concurrency);
+              const results = await Promise.all(chunk.map((id) => getPlayerSlice(cluster, id, account.puuid)));
+              for (const r of results) if (r) slices.push(r);
+            }
+
+            // 集計
+            type ChampAgg = { games: number; wins: number; name: string };
+            const champs = new Map<string, ChampAgg>();
+            const lanes = new Map<string, { games: number; wins: number }>();
+
+            for (const s of slices) {
+              const c = champs.get(s.championName) ?? { games: 0, wins: 0, name: s.championName };
+              c.games += 1; c.wins += s.win ? 1 : 0;
+              champs.set(s.championName, c);
+
+              const lane = (s.teamPosition || "UNKNOWN").toUpperCase();
+              const l = lanes.get(lane) ?? { games: 0, wins: 0 };
+              l.games += 1; l.wins += s.win ? 1 : 0;
+              lanes.set(lane, l);
+            }
+
+            const totalGames = slices.length;
+            const ver = await getLatestDDragonVersion();
+
+            const champions = Array.from(champs.values()).map((c) => ({
+              name: c.name,
+              games: c.games,
+              wins: c.wins,
+              winRate: Math.round((c.wins / Math.max(1, c.games)) * 1000) / 10,
+              icon: championIcon(ver, c.name),
+            }));
+
+            const lanesArr = Array.from(lanes.entries()).map(([lane, v]) => ({
+              lane, games: v.games, wins: v.wins,
+              winRate: Math.round((v.wins / Math.max(1, v.games)) * 1000) / 10
+            }));
+
+            const topUsed = [...champions].sort((a,b)=>b.games-a.games).slice(0,10);
+            const topWinRate = [...champions].filter(c=>c.games>=5).sort((a,b)=>b.winRate-a.winRate).slice(0,10);
+
+            const laneThreshold = 10;
+            const eligibleLanes = lanesArr.filter(l => l.games >= laneThreshold).sort((a,b)=>b.winRate-a.winRate);
+            const bestLane = eligibleLanes[0]?.lane || "UNKNOWN";
+
+            return Response.json({
+              meta: {
+                riotId: `${account.gameName}#${account.tagLine}`,
+                puuid: account.puuid.slice(0,8) + "…",
+                cluster, year: parsed.year, queues, totalGames,
+                generatedAt: new Date().toISOString()
+              },
+              champions, lanes: lanesArr, topUsed, topWinRate, bestLane
+            }, { headers: { "Cache-Control": "no-store" }});
+          } catch (e: any) {
+            const msg = e?.message || "unknown_error";
+            const status = msg === "invalid_riot_id" ? 400
+              : msg === "not_found" ? 404
+              : 500;
+            return new Response(JSON.stringify({ error: msg }), { status });
+          }
+        }
+
+  - write_file:
+      path: app/page.tsx
+      content: |
+        "use client";
+        import { useMemo, useState } from "react";
+        import Card from "@/components/Card";
+        import { Bar, Doughnut } from "react-chartjs-2";
+        import { Chart as ChartJS, ArcElement, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from "chart.js";
+        ChartJS.register(ArcElement, BarElement, CategoryScale, LinearScale, Tooltip, Legend);
+
+        type Champ = { name: string; games: number; wins: number; winRate: number; icon: string };
+        type Lane = { lane: string; games: number; wins: number; winRate: number };
+        type Api = {
+          meta: { riotId: string; totalGames: number; year: number; cluster: string; queues: number[]; generatedAt: string };
+          champions: Champ[]; lanes: Lane[]; topUsed: Champ[]; topWinRate: Champ[]; bestLane: string;
+        };
+
+        export default function Page() {
+          const now = new Date();
+          const [riotId, setRiotId] = useState("");
+          const [year, setYear] = useState(now.getFullYear());
+          const [queues, setQueues] = useState<string>("420,440");
+          const [data, setData] = useState<Api | null>(null);
+          const [loading, setLoading] = useState(false);
+          const [error, setError] = useState<string | null>(null);
+
+          const years = useMemo(() => Array.from({length: 6}, (_,i)=>now.getFullYear()-i), [now]);
+
+          async function run() {
+            setLoading(true); setError(null); setData(null);
+            try {
+              const u = new URL("/api/stats", window.location.origin);
+              u.searchParams.set("riotId", riotId.trim());
+              u.searchParams.set("year", String(year));
+              u.searchParams.set("queues", queues);
+              const res = await fetch(u.toString(), { cache: "no-store" });
+              if (!res.ok) throw new Error((await res.json()).error || "failed");
+              setData(await res.json());
+            } catch (e:any) {
+              setError(e?.message || "failed");
+            } finally {
+              setLoading(false);
+            }
+          }
+
+          return (
+            <main className="max-w-6xl mx-auto p-6 space-y-6">
+              <header className="space-y-2">
+                <h1 className="text-2xl font-semibold">LoL 年間サマリー（NoDB / Vercel）</h1>
+                <p className="text-neutral-400 text-sm">Riot ID から今年の「使用数・勝率・得意レーン」を即席集計</p>
+              </header>
+
+              <Card title="検索">
+                <div className="flex flex-col md:flex-row gap-3 items-start md:items-end">
+                  <div className="flex-1">
+                    <label className="text-xs text-neutral-400">Riot ID（例: Taro#JP1）</label>
+                    <input value={riotId} onChange={e=>setRiotId(e.target.value)}
+                      placeholder="GameName#TagLine"
+                      className="w-full rounded-xl bg-neutral-950 border border-neutral-800 p-2 outline-none" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-neutral-400">年</label>
+                    <select value={year} onChange={e=>setYear(Number(e.target.value))}
+                      className="rounded-xl bg-neutral-950 border border-neutral-800 p-2">
+                      {years.map(y=><option key={y} value={y}>{y}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-neutral-400">キュー（カンマ区切り）</label>
+                    <input value={queues} onChange={e=>setQueues(e.target.value)}
+                      className="w-40 rounded-xl bg-neutral-950 border border-neutral-800 p-2" />
+                  </div>
+                  <button onClick={run}
+                    disabled={loading || !riotId.includes("#")}
+                    className="rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-50 px-4 py-2">
+                    {loading ? "検索中…" : "検索"}
+                  </button>
+                </div>
+                {error && <p className="text-red-400 text-sm mt-2">エラー: {String(error)}</p>}
+              </Card>
+
+              {data && (
+                <>
+                  <section className="grid md:grid-cols-4 gap-4">
+                    <Card title="Riot ID"><div className="text-lg">{data.meta.riotId}</div></Card>
+                    <Card title="総試合数"><div className="text-2xl">{data.meta.totalGames}</div></Card>
+                    <Card title="得意レーン"><div className="text-lg">{data.bestLane}</div></Card>
+                    <Card title="生成日時"><div className="text-sm">{new Date(data.meta.generatedAt).toLocaleString()}</div></Card>
+                  </section>
+
+                  <section className="grid md:grid-cols-2 gap-4">
+                    <Card title="使用数 TOP10">
+                      <Bar data={{
+                        labels: data.topUsed.map(c=>c.name),
+                        datasets: [{ label: "試合数", data: data.topUsed.map(c=>c.games) }]
+                      }} options={{ responsive: true, plugins: { legend: { display: true }}}}/>
+                    </Card>
+                    <Card title="勝率 TOP10（5試合以上）">
+                      <Bar data={{
+                        labels: data.topWinRate.map(c=>c.name),
+                        datasets: [{ label: "勝率(%)", data: data.topWinRate.map(c=>c.winRate) }]
+                      }} options={{ responsive: true, plugins: { legend: { display: true }}}}/>
+                    </Card>
+                    <Card title="レーン分布">
+                      <Doughnut data={{
+                        labels: data.lanes.map(l=>l.lane),
+                        datasets: [{ label: "試合数", data: data.lanes.map(l=>l.games) }]
+                      }} />
+                    </Card>
+                    <Card title="チャンピオン一覧">
+                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                        {data.champions.sort((a,b)=>b.games-a.games).map(ch=>(
+                          <div key={ch.name} className="flex items-center gap-3">
+                            <img src={ch.icon} alt={ch.name} width={36} height={36} className="rounded-lg"/>
+                            <div className="text-sm">
+                              <div className="font-medium">{ch.name}</div>
+                              <div className="text-neutral-400">{ch.games}G / {ch.winRate}%</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+                  </section>
+
+                  <Card title='広告・PR（プレースホルダ）'>
+                    <div className="text-sm text-neutral-300">
+                      <span className="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-300 mr-2">PR</span>
+                      ここにアフィリエイト枠（ゲーミングデバイス等）を表示。※表記の明示をお忘れなく
+                    </div>
+                  </Card>
+                </>
+              )}
+            </main>
+          );
+
+  - write_file:
+      path: README.md
+      content: |
+        # LoL 年間サマリー（NoDB / Vercel）
+        Riot ID を入力して、今年のチャンピオン使用数・勝率・得意レーンを可視化する Next.js（App Router）MVP。**DB不要**、**Riot API を都度叩いて集計**します。
+
+        ## セットアップ
+        1) 依存のインストール  
+           ```bash
+           npm i
+           ```
+        2) 環境変数  
+           `.env.local` を作成し、以下を設定：
+           ```
+           RIOT_API_KEY=<YourRiotApiKey>
+           DEFAULT_QUEUES=420,440
+           RIOT_LANG=ja_JP
+           ```
+        3) 開発サーバ  
+           ```bash
+           npm run dev
+           ```
+
+        ## デプロイ（Vercel）
+        - 初回：`vercel` でプロジェクトをリンク → `vercel --prod`
+        - 環境変数は Vercel の「Project Settings → Environment Variables」に設定  
+          - `RIOT_API_KEY`（必須）
+          - `DEFAULT_QUEUES`（例: `420,440`）
+          - `RIOT_LANG`（例: `ja_JP`）
+
+        ## 注意事項
+        - 本リポジトリは**個人の年間戦績を解析**します。Riot の開発者ポリシー／レート制限を遵守してください。
+        - **429** の場合は自動バックオフしていますが、過度な並列取得は避けています。
+        - **広告・PR表記**はユーザーに明確に分かるように表示してください。
+        - 画像・名称は Data Dragon を利用します。パッチ更新に伴う差分が出る場合があります。
+
+  - run: |
+      npm i && npx tailwindcss init -p -y >/dev/null 2>&1 || true
+
+  - run: |
+      echo '✅ プロジェクト生成が完了しました。次のステップ:
+      1) .env.local を作成し RIOT_API_KEY を設定
+      2) npm run dev でローカル起動
+      3) vercel --prod で本番デプロイ（Vercel で環境変数も設定）'

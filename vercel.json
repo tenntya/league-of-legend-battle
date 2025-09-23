@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "env": {
+    "RIOT_API_KEY": "@riot_api_key",
+    "DEFAULT_QUEUES": "@default_queues",
+    "RIOT_LANG": "@riot_lang"
+  }
+}
+
