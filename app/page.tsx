@@ -5,6 +5,7 @@ import MetaKPI from "@/components/MetaKPI";
 import { Bar, Doughnut, Chart as ChartComponent } from "react-chartjs-2";
 import { CardSkeleton, ChartSkeleton, ListSkeleton } from "@/components/Skeleton";
 import ShareButtons from "@/components/ShareButtons";
+import EmptyState from "@/components/EmptyState";
 import ChartJS from "chart.js/auto";
 // ダーク背景でも視認できるようにデフォルトカラーを調整
 ChartJS.defaults.color = "#e5e7eb"; // tailwind neutral-200
@@ -32,6 +33,7 @@ type Api = {
 export default function Page() {
   const now = new Date();
   const [riotId, setRiotId] = useState("");
+  const riotInputRef = useRef<HTMLInputElement | null>(null);
   const [year, setYear] = useState(now.getFullYear());
   const [mode, setMode] = useState<"year" | "patch" | "patches" | "splits" | "custom">("year");
   const [patchStr, setPatchStr] = useState<string>("");
@@ -140,6 +142,7 @@ export default function Page() {
               placeholder="GameName#TagLine（大文字・#・数字を確認）"
               className="w-full rounded-xl bg-neutral-950 border border-neutral-800 p-2 outline-none transition-soft focus:border-blue-400/50"
               aria-label="Riot ID 入力"
+              ref={riotInputRef}
             />
           </div>
           <div className="w-full md:w-44">
@@ -258,7 +261,7 @@ export default function Page() {
             <label htmlFor="streaming">高速表示（ストリーミング）</label>
           </div>
         </div>
-        {error && <p className="text-red-400 text-sm mt-2" aria-live="polite">エラー: {String(error)}</p>}
+        {error && <p className="text-red-400 text-sm mt-2" aria-live="polite">{describeError(String(error))}</p>}
         {progress && (
           <div className="mt-3">
             <div className="h-2 w-full rounded bg-white/10 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.done} aria-label="取得進捗">
@@ -299,8 +302,33 @@ export default function Page() {
         </>
       )}
 
-      {data && (
-        <>
+      {data && (() => {
+        const total = (data.meta?.totalGames ?? 0);
+        const champCount = (data.champions?.length ?? 0);
+        const isEmpty = total === 0 || champCount === 0;
+        const isSparse = !isEmpty && champCount < 3;
+        if (isEmpty || isSparse) {
+          const title = isEmpty ? "表示できるデータがありません" : "データが少なく精度が低いかも";
+          const message = isEmpty
+            ? "条件を少し変えて、もう一度お試しください。"
+            : "試合数が少ないため傾向のブレが大きい可能性があります。";
+          return (
+            <Card title={isEmpty ? "結果" : "ヒント"}>
+              <EmptyState
+                variant={isEmpty ? "empty" : "sparse"}
+                title={title}
+                message={message}
+                actions={[
+                  { label: `年を${now.getFullYear()}に切替`, onClick: () => setYear(now.getFullYear()) },
+                  { label: "ノーマルを含める", onClick: () => applyPreset("normal") },
+                  { label: "対象試合数を300へ", onClick: () => setLimit(300) },
+                  { label: "Riot ID形式を確認", onClick: () => riotInputRef.current?.focus() },
+                ]}
+              />
+            </Card>
+          );
+        }
+        return (<>
           {data.byPatch && data.byPatch.length > 0 && (
             <Card title="パッチ別サマリー（直近）">
               <div className="flex gap-3 overflow-x-auto pb-1">
@@ -506,27 +534,49 @@ export default function Page() {
             <ShareButtons
               getUrl={() => {
                 const u = new URL(window.location.origin);
-                u.pathname = "/";
+                u.pathname = "/share";
                 u.searchParams.set("riotId", riotId.trim());
                 u.searchParams.set("year", String(year));
                 u.searchParams.set("queues", queues);
                 u.searchParams.set("cluster", cluster);
                 u.searchParams.set("limit", String(limit));
+                if (data?.bestLane) u.searchParams.set("bestLane", data.bestLane);
+                if (data?.topUsed && data.topUsed.length > 0) {
+                  const top = data.topUsed.slice(0, 3).map((c) => `${c.name}:${c.games}:${c.winRate}`);
+                  u.searchParams.set("top", top.join(","));
+                }
+                // Add cache-buster to force X to refresh card preview
+                u.searchParams.set("v", String(Date.now()));
                 return u.toString();
               }}
               text={`LoL 年間サマリー: ${riotId} (${year})`}
             />
           </div>
-
           <Card title="広告・PR（プレースホルダ）">
             <div className="text-sm text-neutral-300">
               <span className="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-300 mr-2">PR</span>
               ここにアフィリエイト枠（ゲーミングデバイス等）を表示。※表記の明示をお忘れなく
             </div>
           </Card>
-        </>
-      )}
+        </>);
+      })()}
       {/* ヒントセクションは非表示に変更 */}
     </main>
   );
 }
+  function describeError(code: string): string {
+    switch (code) {
+      case "unauthorized":
+        return "認証エラー: Riot API キーが無効または期限切れです。開発者ポータルでキーを再発行し .env.local を更新後、サーバーを再起動してください。";
+      case "invalid_riot_id":
+        return "Riot ID が無効です。GameName#TagLine（大文字・#・数字）をご確認ください。";
+      case "rate_limited":
+        return "一時的にアクセスが集中しています。数十秒おいて再試行してください。";
+      case "server_misconfigured":
+        return "サーバー設定エラー: RIOT_API_KEY が未設定です。開発者に連絡してください。";
+      case "stream_error":
+        return "通信エラーが発生しました。ネットワークを確認し、再試行してください。";
+      default:
+        return `エラー: ${code}`;
+    }
+  }

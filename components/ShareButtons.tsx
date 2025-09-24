@@ -14,8 +14,13 @@ export default function ShareButtons({ getUrl, text }: { getUrl: () => string; t
   function shareX() {
     const url = encodeURIComponent(getUrl());
     const body = encodeURIComponent(text || "LoL 年間サマリー");
-    const href = `https://twitter.com/intent/tweet?text=${body}&url=${url}`;
-    window.open(href, "_blank");
+    // Prefer x.com; add fallback when popup is blocked
+    const href = `https://x.com/intent/tweet?text=${body}&url=${url}`;
+    const w = window.open(href, "_blank", "noopener,noreferrer");
+    if (!w) {
+      // Popup blocked: navigate current tab
+      window.location.href = href;
+    }
   }
   return (
     <div className="flex gap-2">
